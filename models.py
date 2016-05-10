@@ -156,7 +156,7 @@ class StandardModel(Model):
             iIdx = items == i
             iDiff = diff[iIdx]
             dbeta_i[i] = 2 * iDiff.sum() / N
-            dV[i] = 2 / N * iDiff.dot(V[users[iIdx]])
+            dV[i] = 2 / N * iDiff.dot(U[users[iIdx]])
 
         # Regularization.
         if use_reg:
