@@ -171,3 +171,59 @@ class StandardModel(Model):
             'V': dV
         }
         return loss, grads
+
+class PMFModel(Model):
+    def __init__(self, nUsers, nItems, latentDim=30, lamU=.1, lamV=.1, dtype=np.float32):
+        self.lamU = lamU
+        self.lamV = lamV
+        self.nUsers = nUsers
+        self.nItems = nItems
+        self.params = {
+            'U': np.random.normal(loc=0, scale=.001, size=(nUsers, latentDim)).astype(dtype),
+            'V': np.random.normal(loc=0, scale=.001, size=(nItems, latentDim)).astype(dtype)
+        }
+
+    def loss(self, X, y=None, use_reg=True):
+        '''
+        Inputs:
+        X: Input data of shape (N, 2), [(uId, iId)].
+        y: [ratings].
+        '''
+
+        U = self.params['U']
+        V = self.params['V']
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+        y_predict = np.sum(U[users] * V[items], axis=1)
+        if y is None:
+            return y_predict
+
+        diff = y_predict - y
+        loss = np.sum(diff**2) / N
+
+        # compute gradients
+        dU = np.zeros_like(U)
+        dV = np.zeros_like(V)
+        for u in range(self.nUsers):
+            uIdx = users == u
+            uDiff = diff[uIdx]
+            dU[u] = 2.0 / N * uDiff.dot(V[items[uIdx]])
+        for i in range(self.nItems):
+            iIdx = items == i
+            iDiff = diff[iIdx]
+            dV[i] = 2.0 / N * iDiff.dot(U[users[iIdx]])
+
+        # Regularization
+        if use_reg:
+            loss += 0.5 * (self.lamU * np.sum(U*U) + self.lamV * np.sum(V*V))
+            dU += self.lamU * U
+            dV += self.lamV * V
+        grads = {
+            'U': dU,
+            'V': dV
+        }
+        return loss, grads
+

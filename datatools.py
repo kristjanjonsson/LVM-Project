@@ -1,6 +1,7 @@
 import gzip
 import os
 import urllib
+import urllib.request
 import csv
 
 DOWNLOADS_DIR = 'data/'
@@ -17,7 +18,7 @@ def cached_download(url):
 
     # Download the file if it does not exist
     if not os.path.isfile(filename):
-        urllib.urlretrieve(url, filename)
+        urllib.request.urlretrieve(url, filename)
 
     return filename
 
