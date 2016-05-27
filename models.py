@@ -227,3 +227,76 @@ class PMFModel(Model):
         }
         return loss, grads
 
+
+class MixtureModel(Model):
+
+    def __init__(self, nUsers, nItems, nProfiles, latentDim=30, reg=0.01, alpha=None, dtype=np.float32):
+        self.nUsers = nUsers
+        self.nItems = nItems
+        self.nProfiles = nProfiles
+        self.reg = reg
+        # We fold in the -1 to each alpha term.
+        self.alpha = alpha.astype(dtype) - 1 if alpha else np.zeros(nUsers, dtype=dtype)
+        self.dtype = dtype
+        self.params = {
+            'pi': np.ones(nUsers, dtype=dtype) / nUsers,
+            'U': np.random.normal(scale=1e-3, size=(nUsers, latentDim)).astype(dtype),
+            'V': np.random.normal(scale=1e-3, size=(nItems, latentDim)).astype(dtype)
+        }
+        self.hiddenState = {
+            'Z': np.zeros((nUsers, nProfiles), dtype=dtype)
+        }
+        self.hiddenState['Z'][:, np.random.randint(0, nProfiles, nUsers)] = 1.0
+
+    def loss(self, X, y=None, use_reg=True):
+        '''
+        Inputs:
+        X: Input data of shape (N, 2), [(uId, iId)].
+        y: [ratings].
+
+        Returns:
+        Loss with respect U and V given the current estimate of hiddenState.
+        '''
+        Z = self.hiddenState['Z']
+        U = self.params['U']
+        V = self.params['V']
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+
+        if y is None:
+            raise NotImplementedError("EM doesn't really fit this API.")
+
+        # scores.shape = (N, P)
+        # scores[i] is the predicted rating for all P profiles.
+        scores = V[items].dot(U.T)
+        diff = scores - y
+
+        # We have to average across the hiddenState probabilities.
+        losses = diff**2
+        losses *= Z[users]
+        loss = np.sum(losses) / N
+
+        dU = np.zeros_like(U)
+        dV = np.zeros_like(V)
+        weightedDiff = 2 * diff * Z[users] / N
+        dU += weightedDiff.T.dot(V[items])
+
+        for i in range(self.nItems):
+            iIdx = items == i
+            iDiff = weightedDiff[iIdx]
+            dV[i] = iDiff.dot(U).sum(axis=0)
+
+        # Regularization.
+        if use_reg:
+            loss += 0.5 * self.reg * (np.sum(U*U) + np.sum(V*V))
+            dU += self.reg * U
+            dV += self.reg * V
+        grads = {
+            'U': dU,
+            'V': dV
+        }
+        return loss, grads
+
