@@ -18,12 +18,13 @@ randn('state',0);
 if restart==1 
   restart=0; 
   epoch=1; 
-  maxepoch=50; 
+  maxepoch=50;
 
   iter=0; 
   num_m = 3952;
   num_p = 6040;
   num_feat = 10;
+  num_class = 10;
 
   % Initialize hierarchical priors 
   beta=2; % observation noise (precision) 
@@ -71,7 +72,19 @@ if restart==1
 
   count=count';
   probe_rat_all = pred(w1_M1_sample,w1_P1_sample,probe_vec,mean_rating);
-  counter_prob=1; 
+  counter_prob=1;
+  
+  %Initialize parameters for latent assignments
+  alpha = ones(num_class,1); %prior for theta
+  theta = sampleDirichlet(alpha); %distribution of assignments
+  z = randi(num_class,num_p,1); %latent assignments
+  %Select initial weights of these clusters as an average
+  w1_C1_sample = zeros(num_class,num_feat);
+  for cc = 1:num_class
+      ff = find(z == cc);
+      latent_vec = w1_P1_sample(ff,:);
+      w1_C1_sample(cc,:) = mean(latent_vec,1);
+  end
 
 end
 
@@ -94,8 +107,15 @@ for epoch = epoch:maxepoch
   lam = chol( inv((b0_m+N)*alpha_m) ); lam=lam';
   mu_m = lam*randn(num_feat,1)+mu_temp;
 
+
+  
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   %%% Sample from user hyperparams
+  %%%
+  %%% No Modification? Hyperparameter over cluster means/covariances
+  %%% But now we have fewer clusters than users. However, clusters
+  %%% should be weighted by their user counts, which degrades back
+  %%% to these original sums over all users.
   N = size(w1_P1_sample,1);
   x_bar = mean(w1_P1_sample)';
   S_bar = cov(w1_P1_sample);
@@ -112,11 +132,16 @@ for epoch = epoch:maxepoch
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   % Start doing Gibbs updates over user and 
   % movie feature vectors given hyperparams.  
+  %
+  % No modifications for movie feature sampling.
+  % User sampling modified to sample clusters instead.
 
   for gibbs=1:2 
     fprintf(1,'\t\t Gibbs sampling %d \r', gibbs);
 
     %%% Infer posterior distribution over all movie feature vectors 
+    %%%
+    %%% No modifications for movie feature sampling.
     count=count';
     for mm=1:num_m
        fprintf(1,'movie =%d\r',mm);
@@ -127,19 +152,103 @@ for epoch = epoch:maxepoch
        mean_m = covar * (beta*MM'*rr+alpha_m*mu_m);
        lam = chol(covar); lam=lam'; 
        w1_M1_sample(mm,:) = lam*randn(num_feat,1)+mean_m;
-     end
+    end
 
-    %%% Infer posterior distribution over all user feature vectors 
-     count=count';
-     for uu=1:num_p
-       fprintf(1,'user  =%d\r',uu);
-       ff = find(count(:,uu)>0);
+    %%% Infer posterior distribution over all latent assignment
+    %%% distribution.
+    %%% (NEW)
+    % Basic dirichlet update: Given observed assignments, generate
+    % new proportions.
+    classcount = zeros(num_class,1);
+    for cc = 1:num_class
+        classcount(cc) = sum(z == cc);
+    end
+    alpha_post = alpha + classcount;
+    theta = sampleDirichlet(alpha_post);
+    
+    
+    count=count';
+    %%% Infer posterior distribution over all user-cluster assignments
+    %%% (NEW)
+    for uu=1:num_p
+        fprintf(1,'user =%d\r',uu);
+        % select latent movies and ratings for this user
+        ff = find(count(:,uu)>0);
+        MM = w1_M1_sample(ff,:);
+        rr = count(ff,uu);
+        % add in influence of the prior theta 
+        log_probs = log(theta);
+        % compute likelihoods of each cluster in generating this user's
+        % ratings
+        for cc = 1:num_class
+            rd = w1_C1_sample(cc,:) * MM' + mean_rating;
+            rd = rd' - rr;
+            rd = rd.^2;
+            % rd now has the squared distance of each rating from its mean.
+            % adding these now gives the appropriate scaled likelihood for
+            % this cluster
+            
+            log_probs(cc) = log_probs(cc) + (2*beta)^-1*sum(rd);
+        end
+        %renormalize
+        max_log = max(log_probs);
+        log_probs = log_probs - max_log;
+        log_norm = log_sum_exp(log_probs);
+        
+        probs = exp(log_probs - log_norm );
+        %DEBUG:
+        %   fprintf(1,'sumprob =%d\r',sum(probs));
+        %sample
+        if (sum(probs) > 0)
+            z(uu) = sampleFromDiscrete(probs);
+        else
+            z(uu) = randi(num_class,1,1);
+            pause; %Shouldn't happen.
+        end
+    end
+        
+    
+    
+    %%% Infer posterior distribution over all user-cluster feature vectors 
+    %%%
+    %%% Mild modification: Instead of selecting all movies/ratings for one
+    %%% user, select all movies/ratings for a whole cluster of users.
+     for cc=1:num_class
+       fprintf(1,'user-cluster  =%d\r',cc);
+       % create  multiset of movies rated by users in this cluster.
+       % For each user in cluster, generate list of movies and ratings
+       % that are nonzero
+       uf = find(z == cc);
+       if (sum(uf) == 0)
+           continue
+       end
+       ff = [];
+       rr = [];
+       for ui = 1:length(uf)
+           uu = uf(ui);
+           newf = find(count(:,uu) > 0);
+           ff = [ff;newf];
+           rr = [rr; count(newf,uu)];
+       end
        MM = w1_M1_sample(ff,:);
-       rr = count(ff,uu)-mean_rating;
-       covar = inv((alpha_u+beta*MM'*MM));
+       rr = rr-mean_rating;
+       % At this point MM has a collection of movie latent vecs,
+       % and rr has the rating given for each row of MM.
+       % When a movie was rated by multiple users of this cluster,
+       % that movie latent vec is duplicated in MM.
+       % When ratings are omitted, they do not show up in rr or MM.
+       %
+       % The following is essentially now unmodified. Given all these
+       % ratings and movie vecs, compute a posterior for the cluster vec.
+       covar = inv((alpha_u+beta*(MM'*MM)));
        mean_u = covar * (beta*MM'*rr+alpha_u*mu_u);
-       lam = chol(covar); lam=lam'; 
-       w1_P1_sample(uu,:) = lam*randn(num_feat,1)+mean_u;
+       lam = chol(covar); lam=lam';
+       new_latent_vec = lam*randn(num_feat,1)+mean_u;
+       w1_C1_sample(cc,:) = new_latent_vec;
+       % HACK: rather than update all the other code to be
+       % user-cluster aware, we'll just hard assign each user
+       % to the latent representation of their cluster.
+       w1_P1_sample(uf,:) = repmat(new_latent_vec',length(uf),1);
      end
    end 
 
