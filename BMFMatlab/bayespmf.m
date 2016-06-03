@@ -85,6 +85,8 @@ if restart==1
       latent_vec = w1_P1_sample(ff,:);
       w1_C1_sample(cc,:) = mean(latent_vec,1);
   end
+%   randind = randperm(num_p,num_class);
+%   w1_C1_sample = w1_P1_sample(randind,:);
 
 end
 
@@ -188,7 +190,7 @@ for epoch = epoch:maxepoch
             % adding these now gives the appropriate scaled likelihood for
             % this cluster
             
-            log_probs(cc) = log_probs(cc) + (2*beta)^-1*sum(rd);
+            log_probs(cc) = log_probs(cc) - (2*beta)^-1*sum(rd);
         end
         %renormalize
         max_log = max(log_probs);
