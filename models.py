@@ -1,5 +1,5 @@
 import numpy as np
-
+import math
 
 class Model:
     '''An abstract model class.
