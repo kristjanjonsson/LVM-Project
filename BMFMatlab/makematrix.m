@@ -16,10 +16,13 @@
 
 %% Create a matrix of size num_p by num_m from triplets {user_id, movie_id, rating_id}  
 
-load moviedata
+%load moviedata
+load movieLens
 
-num_m = 3952;
-num_p = 6040;
+%num_m = 3952;
+%num_p = 6040;
+num_m = 1682;
+num_p = 943;
 count = zeros(num_p,num_m,'single'); %for Netflida data, use sparse matrix instead. 
 
 for mm=1:num_m
