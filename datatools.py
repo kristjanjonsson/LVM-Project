@@ -3,6 +3,9 @@ import os
 import urllib
 import urllib.request
 import csv
+import zipfile
+
+import numpy as np
 
 DOWNLOADS_DIR = 'data/'
 
@@ -30,6 +33,34 @@ def parse_amazon(infile):
         yield eval(l)
 
 
+def movielens_unzip(infile):
+    g = zipfile.ZipFile(infile)
+    g.extractall(DOWNLOADS_DIR)
+
+
+def parse_movieLens(path):
+    train = []
+    with open(os.path.join(path, 'u1.base')) as f:
+        for line in f:
+            uId, iId, r, timestamp = line.strip().split()
+            train.append((int(uId), int(iId), int(r)))
+    train = np.array(train, dtype=np.int32)
+
+    test = []
+    with open(os.path.join(path, 'u1.test')) as f:
+        for line in f:
+            uId, iId, r, timestamp = line.strip().split()
+            test.append((int(uId), int(iId), int(r)))
+    test = np.array(test, dtype=np.int32)
+
+    return train, test
+
+
+def out_data_movieLens(fnameTrain, fnameTest, train, test):
+    np.savetxt(os.path.join(DOWNLOADS_DIR, fnameTrain), train, fmt='%d', delimiter=",")
+    np.savetxt(os.path.join(DOWNLOADS_DIR, fnameTest), test, fmt='%d', delimiter=",")
+
+
 def parse_amazon_csv(fname, delim):
     with open(fname, 'r') as csvfile:
         csvreader = csv.reader(csvfile, delimiter=delim)
@@ -51,5 +82,3 @@ def parse_amazon_csv(fname, delim):
     X = [[uid_map[uid], iid_map[iid], time] for [uid, iid, time] in X]
 
     return unique_users, uid_map, unique_items, iid_map, X, y
-
-
