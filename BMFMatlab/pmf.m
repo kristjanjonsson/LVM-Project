@@ -24,15 +24,19 @@ if restart==1
   epoch=1; 
   maxepoch=50; 
 
-  load moviedata % Triplets: {user_id, movie_id, rating} 
+  %load moviedata % Triplets: {user_id, movie_id, rating} 
+  load movieLens
   mean_rating = mean(train_vec(:,3)); 
  
   pairs_tr = length(train_vec); % training data 
   pairs_pr = length(probe_vec); % validation data 
 
-  numbatches= 9; % Number of batches  
-  num_m = 3952;  % Number of movies 
-  num_p = 6040;  % Number of users 
+  %numbatches= 9; % Number of batches  
+  %num_m = 3952;  % Number of movies 
+  %num_p = 6040;  % Number of users 
+  numbatches = 8; % Number of batches 
+  num_m = 1682;
+  num_p = 943;
   num_feat = 10; % Rank 10 decomposition 
 
   w1_M1     = 0.1*randn(num_m, num_feat); % Movie feature vectors
@@ -50,7 +54,7 @@ for epoch = epoch:maxepoch
 
   for batch = 1:numbatches
     fprintf(1,'epoch %d batch %d \r',epoch,batch);
-    N=100000; % number training triplets per batch 
+    N=10000; % number training triplets per batch 
 
     aa_p   = double(train_vec((batch-1)*N+1:batch*N,1));
     aa_m   = double(train_vec((batch-1)*N+1:batch*N,2));
