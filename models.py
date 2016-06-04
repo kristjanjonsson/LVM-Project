@@ -279,7 +279,7 @@ class MixtureModel(Model):
         self.alpha = alpha.astype(dtype) - 1 if alpha is not None else np.zeros(nProfiles, dtype=dtype)
         self.dtype = dtype
         self.params = {
-            'pi': np.ones(nProfiles, dtype=dtype) / nUsers,
+            'pi': np.ones(nProfiles, dtype=dtype) / nProfiles,
             'U': np.random.normal(scale=1e-3, size=(nProfiles, latentDim)).astype(dtype),
             'V': np.random.normal(scale=1e-3, size=(nItems, latentDim)).astype(dtype)
         }
@@ -294,11 +294,11 @@ class MixtureModel(Model):
         Z = self.hiddenState['Z']
         pi = Z.sum(axis=0) + self.alpha
         pi /= pi.sum()
+        assert self.params['pi'].shape == pi.shape
         self.params['pi'] = pi
 
     def estimate(self, X, y):
         '''Updates the hiddenState based on current parameters.'''
-        Z = self.hiddenState['Z']
         U = self.params['U']
         V = self.params['V']
         pi = self.params['pi']
@@ -310,8 +310,12 @@ class MixtureModel(Model):
         scores = V[items].dot(U.T)
         diff = scores - y.reshape((N, 1))
         losses = diff**2
-        logp = np.log(pi) - 0.5 * losses.sum(axis=0)
-        self.params['Z'] = softmax(logp)
+        Z = np.zeros_like(self.hiddenState['Z'])
+        for u in range(self.nUsers):
+            idx = users == u
+            Z[u] -= 0.5 * losses[idx].sum(axis=0)
+        Z += np.log(pi)
+        self.hiddenState['Z'] = softmax(Z)
 
 
     def loss(self, X, y=None, use_reg=True):
@@ -394,8 +398,8 @@ class MixtureModel(Model):
 def softmax(x):
     '''x has shape (n, )'''
     r = x.copy()
-    r -= r.max()
+    r -= r.max(axis=1, keepdims=True)
     r = np.exp(r)
-    r /= r.sum()
+    r /= r.sum(axis=1, keepdims=True)
     return r
 
