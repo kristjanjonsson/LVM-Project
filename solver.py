@@ -166,11 +166,12 @@ class Solver:
 
     # Perform a parameter update
     for p, w in self.model.params.items():
-      dw = grads[p]
-      config = self.optim_configs[p]
-      next_w, next_config = self.update_rule(w, dw, config)
-      self.model.params[p] = next_w
-      self.optim_configs[p] = next_config
+      if p in grads:
+        dw = grads[p]
+        config = self.optim_configs[p]
+        next_w, next_config = self.update_rule(w, dw, config)
+        self.model.params[p] = next_w
+        self.optim_configs[p] = next_config
 
 
   def check_loss(self, X, y, num_samples=None, batch_size=10000):
@@ -216,10 +217,13 @@ class Solver:
     return total_loss
 
 
-  def train(self):
+  def train(self, num_epochs=None):
     """
     Run optimization to train the model.
     """
+    if num_epochs:
+      self.num_epochs = num_epochs
+
     num_train = self.X_train.shape[0]
     iterations_per_epoch = max(num_train // self.batch_size, 1)
     num_iterations = self.num_epochs * iterations_per_epoch

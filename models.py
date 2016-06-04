@@ -27,12 +27,17 @@ class Model:
           names to gradients of the loss with respect to those parameters.'''
         raise NotImplementedError()
 
+    def predict(self, X, *args, **kwargs):
+        '''Predicts y based on X.'''
+        raise NotImplementedError()
+
 
 class MeanModel(Model):
     '''Model that predicts the mean of the training ratings.'''
 
     def fit(self, y_train):
         self.mean = y_train.mean()
+        self.dtype = y_train.dtype
 
     def loss(self, X, y=None):
         N = X.shape[0]
@@ -43,6 +48,9 @@ class MeanModel(Model):
             diff = y_predict - y
             loss = np.sum(diff**2) / N
             return loss, None
+
+    def predict(self, X):
+        return self.mean * np.ones(len(X), dtype=self.dtype)
 
 
 class SimpleModel(Model):
@@ -95,6 +103,19 @@ class SimpleModel(Model):
             'beta_i': dbeta_i
         }
         return loss, grads
+
+    def predict(self, X, clipRange=(1.0, 5.0)):
+        alpha = self.params['alpha']
+        beta_i = self.params['beta_i']
+        beta_u = self.params['beta_u']
+        users = X[:, 0]
+        items = X[:, 1]
+        y = alpha + beta_i[items] + beta_u[users]
+        low, high = clipRange
+        y[y > high] = high
+        y[y < low] = low
+        assert len(X) == len(y)
+        return y
 
 
 class StandardModel(Model):
@@ -172,6 +193,25 @@ class StandardModel(Model):
         }
         return loss, grads
 
+
+    def predict(self, X, clipRange=(1.0, 5.0)):
+        alpha = self.params['alpha']
+        beta_u = self.params['beta_u']
+        beta_i = self.params['beta_i']
+        U = self.params['U']
+        V = self.params['V']
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+        y = alpha + beta_u[users] + beta_i[items] + np.sum(U[users] * V[items], axis=1)
+        low, high = clipRange
+        y[y > high] = high
+        y[y < low] = low
+        return y
+
+
 class PMFModel(Model):
     def __init__(self, nUsers, nItems, latentDim=30, lamU=.1, lamV=.1, dtype=np.float32):
         self.lamU = lamU
@@ -236,17 +276,43 @@ class MixtureModel(Model):
         self.nProfiles = nProfiles
         self.reg = reg
         # We fold in the -1 to each alpha term.
-        self.alpha = alpha.astype(dtype) - 1 if alpha else np.zeros(nUsers, dtype=dtype)
+        self.alpha = alpha.astype(dtype) - 1 if alpha is not None else np.zeros(nProfiles, dtype=dtype)
         self.dtype = dtype
         self.params = {
-            'pi': np.ones(nUsers, dtype=dtype) / nUsers,
-            'U': np.random.normal(scale=1e-3, size=(nUsers, latentDim)).astype(dtype),
+            'pi': np.ones(nProfiles, dtype=dtype) / nUsers,
+            'U': np.random.normal(scale=1e-3, size=(nProfiles, latentDim)).astype(dtype),
             'V': np.random.normal(scale=1e-3, size=(nItems, latentDim)).astype(dtype)
         }
+        Z = np.zeros((nUsers, nProfiles), dtype=dtype)
+        Z[np.arange(nUsers), np.random.choice(np.arange(nProfiles), size=nUsers)] = 1.0
         self.hiddenState = {
-            'Z': np.zeros((nUsers, nProfiles), dtype=dtype)
+            'Z': Z
         }
-        self.hiddenState['Z'][:, np.random.randint(0, nProfiles, nUsers)] = 1.0
+        # self.hiddenState['Z'] /= self.hiddenState['Z'].sum(axis=1).reshape(nUsers, 1)
+
+    def updatePi(self):
+        Z = self.hiddenState['Z']
+        pi = Z.sum(axis=0) + self.alpha
+        pi /= pi.sum()
+        self.params['pi'] = pi
+
+    def estimate(self, X, y):
+        '''Updates the hiddenState based on current parameters.'''
+        Z = self.hiddenState['Z']
+        U = self.params['U']
+        V = self.params['V']
+        pi = self.params['pi']
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+        scores = V[items].dot(U.T)
+        diff = scores - y.reshape((N, 1))
+        losses = diff**2
+        logp = np.log(pi) - 0.5 * losses.sum(axis=0)
+        self.params['Z'] = softmax(logp)
+
 
     def loss(self, X, y=None, use_reg=True):
         '''
@@ -272,7 +338,7 @@ class MixtureModel(Model):
         # scores.shape = (N, P)
         # scores[i] is the predicted rating for all P profiles.
         scores = V[items].dot(U.T)
-        diff = scores - y
+        diff = scores - y.reshape((N, 1))
 
         # We have to average across the hiddenState probabilities.
         losses = diff**2
@@ -299,4 +365,37 @@ class MixtureModel(Model):
             'V': dV
         }
         return loss, grads
+
+    def predict(self, X, mean=0.0, clipRange=(1.0, 5.0)):
+        '''Adds mean to the model prediction and clips the values to be in clipRange.'''
+        Z = self.hiddenState['Z']
+        U = self.params['U']
+        V = self.params['V']
+
+        users = X[:, 0]
+        items = X[:, 1]
+        # user2profile = np.argmax(Z, axis=1)
+        # profiles = user2profile[users]
+
+        # y = np.sum(V[items] * U[profiles], axis=1)
+        scores = V[items].dot(U.T)
+        scores *= Z[users]
+        y = scores.sum(axis=1)
+
+        y += mean
+        low, high = clipRange
+        y[y > high] = high
+        y[y < low] = low
+        return y
+
+
+
+
+def softmax(x):
+    '''x has shape (n, )'''
+    r = x.copy()
+    r -= r.max()
+    r = np.exp(r)
+    r /= r.sum()
+    return r
 
