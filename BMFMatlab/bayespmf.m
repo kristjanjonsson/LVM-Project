@@ -21,8 +21,7 @@ if restart==1
   maxepoch=50;
 
   iter=0; 
-  num_m = 1682;
-  num_p = 943;
+
   num_feat = 10;
   num_class = 10;
 
@@ -52,10 +51,21 @@ if restart==1
   pairs_tr = length(train_vec);
   pairs_pr = length(probe_vec);
 
-  fprintf(1,'Initializing Bayesian PMF using MAP solution found by PMF \n'); 
+  fprintf(1,'Initializing Bayesian PMF using MAP solution found by PMF \n');
+  % Update makematrix to load a new data set
   makematrix
-
+  
+  
   load pmf_weight
+  
+  if (size(w1_P1,1) ~= num_p)
+      size(w1_P1)
+      fprintf(1,'Redoing PMF...\n');
+      pause;
+      restart = 1;
+      pmf
+  end
+  
   err_test = cell(maxepoch,1);
 
   w1_P1_sample = w1_P1; 
@@ -78,7 +88,8 @@ if restart==1
   %Initialize parameters for latent assignments
   alpha = ones(num_class,1); %prior for theta
   theta = sampleDirichlet(alpha); %distribution of assignments
-  z = randi(num_class,num_p,1); %latent assignments
+  z = randi(num_class,orig_num_p,1); %latent assignments
+  z = repmat(z,num_t,1);
   %Select initial weights of these clusters as an average
   w1_C1_sample = zeros(num_class,num_feat);
   for cc = 1:num_class
@@ -86,6 +97,16 @@ if restart==1
       latent_vec = w1_P1_sample(ff,:);
       w1_C1_sample(cc,:) = mean(latent_vec,1);
   end
+  
+  %Generate transition matrix. Bias to staying in same state.
+  Aprior = ones(num_class,num_class) + (num_class-2)*eye(num_class);
+  A = zeros(num_class);
+  for cc = 1:num_class
+      A(:,cc) = sampleDirichlet(Aprior(:,cc));
+  end
+  
+  %prior for first node in the HMM chain.
+  Azero = sampleDirichlet(ones(num_class,1));
 %   randind = randperm(num_p,num_class);
 %   w1_C1_sample = w1_P1_sample(randind,:);
 
@@ -157,57 +178,125 @@ for epoch = epoch:maxepoch
        w1_M1_sample(mm,:) = lam*randn(num_feat,1)+mean_m;
     end
 
-    %%% Infer posterior distribution over all latent assignment
-    %%% distribution.
-    %%% (NEW)
-    % Basic dirichlet update: Given observed assignments, generate
-    % new proportions.
-    classcount = zeros(num_class,1);
-    for cc = 1:num_class
-        classcount(cc) = sum(z == cc);
-    end
-    alpha_post = alpha + classcount;
-    theta = sampleDirichlet(alpha_post);
     
+    %%% Infer posterior distribution over transition matrix A
+    %%% (NEW)
+    fprintf(1,'Sampling transition matrix...\r');
+    transitioncounts = zeros(num_class)
+    for uu = 1:orig_num_p
+        zold = z(uu);
+        for tt = 2:num_t
+            uu = uu + orig_num_p;
+            znew = z(uu);
+            transitioncounts(zold,znew) = transitioncounts(zold,znew) +1;
+            zold = znew;
+        end
+    end
+    for cc = 1:num_class
+        Apost = Aprior(cc,:) + transitioncounts(cc,:);
+        A(cc,:) = sampleDirichlet(Apost);
+    end
     
     count=count';
     %%% Infer posterior distribution over all user-cluster assignments
     %%% (NEW)
-    for uu=1:num_p
+    for uu=1:orig_num_p
         fprintf(1,'user =%d\r',uu);
         % select latent movies and ratings for this user
-        ff = find(count(:,uu)>0);
+        % need to do some work to account for the user appearing
+        % in each time step.
+        uf = ((1:num_t) - 1)*orig_num_p + uu;
+        ff = [];
+        rr = [];
+        rt = [];
+        for ui = 1:length(uf)
+           uuu = uf(ui);
+           newf = find(count(:,uuu) > 0);
+           ff = [ff;newf];
+           rr = [rr; count(newf,uuu)];
+           rt = [rt; ui*ones(length(newf),1)];
+        end
         MM = w1_M1_sample(ff,:);
-        rr = count(ff,uu);
-        % add in influence of the prior theta 
-        log_probs = log(theta);
-        % compute likelihoods of each cluster in generating this user's
-        % ratings
-        for cc = 1:num_class
-            rd = w1_C1_sample(cc,:) * MM' + mean_rating;
-            rd = rd' - rr;
-            rd = rd.^2;
-            % rd now has the squared distance of each rating from its mean.
-            % adding these now gives the appropriate scaled likelihood for
-            % this cluster
-            
-            log_probs(cc) = log_probs(cc) - (2*beta)^-1*sum(rd);
-        end
-        %renormalize
-        max_log = max(log_probs);
-        log_probs = log_probs - max_log;
-        log_norm = log_sum_exp(log_probs);
         
-        probs = exp(log_probs - log_norm );
-        %DEBUG:
-        %   fprintf(1,'sumprob =%d\r',sum(probs));
-        %sample
-        if (sum(probs) > 0)
-            z(uu) = sampleFromDiscrete(probs);
-        else
-            z(uu) = randi(num_class,1,1);
-            pause; %Shouldn't happen.
+        %Now we have these vars:
+        % uf: list of user-time ids for this user
+        % ff: list of movie-ids this user reviewed.
+        % MM: Movie latent vecs, ordered by ff.
+        % rr: User's rating, ordered by ff.
+        % rt: The time of the rating, ordered by ff.
+        
+        %size(uf)
+        %size(ff)
+        %size(MM)
+        %size(rr)
+        %size(rt)
+        %uf
+        %rt
+        
+        %begin the forwards-backwards sampling by computing alphas
+        alpha = zeros(num_t+1,num_class);
+        alpha(1,:) = log(Azero);
+        loglikelihoods = ones(num_t,num_class);
+        
+        for tt = 1:num_t
+            %select out observations at this timestep.
+            rf = (rt == tt);
+            if (sum(rf) > 0)
+                
+              %fprintf(1,'user %d has a review at time %d!\n',uu,tt);
+              %pause;
+              fft = ff(rf);
+              MMt = MM(rf,:);
+              rrt = rr(rf);
+              % compute likelihoods of each cluster in generating this user's
+              % ratings
+              for cc = 1:num_class
+                rd = w1_C1_sample(cc,:) * MM' + mean_rating;
+                rd = rd' - rr;
+                rd = rd.^2;
+                % rd now has the squared distance of each rating from its mean.
+                % adding these now gives the appropriate scaled likelihood for
+                % this cluster
+              
+                loglikelihoods(tt,cc) = - (beta)^-1*sum(rd);
+              end
+            end
+            
+            temp = repmat(alpha(tt,:),num_class,1) + log(A);
+            alpha(tt+1,:) = loglikelihoods(tt,:) + log_sum_exp(temp);
+            alpha(tt+1,:) = alpha(tt+1,:) - max(alpha(tt+1,:));
         end
+        
+        %Now we sample backwards
+        log_probs = zeros(1,num_class);
+        zs_new = zeros(num_t,1);
+        for tt=num_t:-1:1
+             if (tt == num_t)
+                 log_probs = alpha(num_t+1,:)';
+             else
+                 znext = zs_new(tt+1);
+                 log_probs = log(A(:,znext)) + alpha(num_t+1,:)';
+             end
+             %renormalize
+             max_log = max(log_probs);
+             log_probs = log_probs - max_log;
+             log_norm = log_sum_exp(log_probs);
+        
+             probs = exp(log_probs - log_norm );
+             %DEBUG:
+             %   fprintf(1,'sumprob =%d\r',sum(probs));
+             %sample
+             if (sum(probs) > 0)
+                   zs_new(tt) = sampleFromDiscrete(probs);
+             else
+                   zs_new(tt) = randi(num_class,1,1);
+                   probs
+                   log_probs
+                   fprintf(1,'Probabilities exploded.\n');
+                   pause; %Shouldn't happen.
+             end
+        end
+        z(uf) = zs_new;
     end
         
     

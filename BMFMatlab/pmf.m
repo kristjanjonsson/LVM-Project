@@ -24,8 +24,10 @@ if restart==1
   epoch=1; 
   maxepoch=50; 
 
-  %load moviedata % Triplets: {user_id, movie_id, rating} 
-  load movieLens
+
+  %load moviedata % Triplets: {user_id, movie_id, rating}
+  makematrix
+  
   mean_rating = mean(train_vec(:,3)); 
  
   pairs_tr = length(train_vec); % training data 
@@ -35,8 +37,7 @@ if restart==1
   %num_m = 3952;  % Number of movies 
   %num_p = 6040;  % Number of users 
   numbatches = 8; % Number of batches 
-  num_m = 1682;
-  num_p = 943;
+  
   num_feat = 10; % Rank 10 decomposition 
 
   w1_M1     = 0.1*randn(num_m, num_feat); % Movie feature vectors
@@ -63,6 +64,11 @@ for epoch = epoch:maxepoch
     rating = rating-mean_rating; % Default prediction is the mean rating. 
 
     %%%%%%%%%%%%%% Compute Predictions %%%%%%%%%%%%%%%%%
+    size(w1_M1)
+    size(w1_P1)
+    max(aa_m)
+    max(aa_p)
+    size(aa_p)
     pred_out = sum(w1_M1(aa_m,:).*w1_P1(aa_p,:),2);
     f = sum( (pred_out - rating).^2 + ...
         0.5*lambda*( sum( (w1_M1(aa_m,:).^2 + w1_P1(aa_p,:).^2),2)));
