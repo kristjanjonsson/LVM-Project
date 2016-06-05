@@ -21,8 +21,8 @@ if restart==1
   maxepoch=50;
 
   iter=0; 
-  num_m = 3952;
-  num_p = 6040;
+  num_m = 1682;
+  num_p = 943;
   num_feat = 10;
   num_class = 10;
 
@@ -44,7 +44,8 @@ if restart==1
   df_m = num_feat;
   mu0_m = zeros(num_feat,1);
 
-  load moviedata
+  %load moviedata
+  load movieLens
   mean_rating = mean(train_vec(:,3));
   ratings_test = double(probe_vec(:,3));
 

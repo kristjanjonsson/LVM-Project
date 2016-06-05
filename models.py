@@ -1,5 +1,5 @@
 import numpy as np
-
+import math
 
 class Model:
     '''An abstract model class.
@@ -27,12 +27,17 @@ class Model:
           names to gradients of the loss with respect to those parameters.'''
         raise NotImplementedError()
 
+    def predict(self, X, *args, **kwargs):
+        '''Predicts y based on X.'''
+        raise NotImplementedError()
+
 
 class MeanModel(Model):
     '''Model that predicts the mean of the training ratings.'''
 
     def fit(self, y_train):
         self.mean = y_train.mean()
+        self.dtype = y_train.dtype
 
     def loss(self, X, y=None):
         N = X.shape[0]
@@ -43,6 +48,9 @@ class MeanModel(Model):
             diff = y_predict - y
             loss = np.sum(diff**2) / N
             return loss, None
+
+    def predict(self, X):
+        return self.mean * np.ones(len(X), dtype=self.dtype)
 
 
 class SimpleModel(Model):
@@ -95,6 +103,19 @@ class SimpleModel(Model):
             'beta_i': dbeta_i
         }
         return loss, grads
+
+    def predict(self, X, clipRange=(1.0, 5.0)):
+        alpha = self.params['alpha']
+        beta_i = self.params['beta_i']
+        beta_u = self.params['beta_u']
+        users = X[:, 0]
+        items = X[:, 1]
+        y = alpha + beta_i[items] + beta_u[users]
+        low, high = clipRange
+        y[y > high] = high
+        y[y < low] = low
+        assert len(X) == len(y)
+        return y
 
 
 class StandardModel(Model):
@@ -172,6 +193,25 @@ class StandardModel(Model):
         }
         return loss, grads
 
+
+    def predict(self, X, clipRange=(1.0, 5.0)):
+        alpha = self.params['alpha']
+        beta_u = self.params['beta_u']
+        beta_i = self.params['beta_i']
+        U = self.params['U']
+        V = self.params['V']
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+        y = alpha + beta_u[users] + beta_i[items] + np.sum(U[users] * V[items], axis=1)
+        low, high = clipRange
+        y[y > high] = high
+        y[y < low] = low
+        return y
+
+
 class PMFModel(Model):
     def __init__(self, nUsers, nItems, latentDim=30, lamU=.1, lamV=.1, dtype=np.float32):
         self.lamU = lamU
@@ -227,3 +267,224 @@ class PMFModel(Model):
         }
         return loss, grads
 
+
+class MixtureModel(Model):
+
+    def __init__(self, nUsers, nItems, nProfiles, latentDim=30, reg=0.01, alpha=None, dtype=np.float32):
+        self.nUsers = nUsers
+        self.nItems = nItems
+        self.nProfiles = nProfiles
+        self.reg = reg
+        # We fold in the -1 to each alpha term.
+        self.alpha = alpha.astype(dtype) - 1 if alpha is not None else np.zeros(nProfiles, dtype=dtype)
+        self.dtype = dtype
+        self.params = {
+            'pi': np.ones(nProfiles, dtype=dtype) / nProfiles,
+            'U': np.random.normal(scale=1e-3, size=(nProfiles, latentDim)).astype(dtype),
+            'V': np.random.normal(scale=1e-3, size=(nItems, latentDim)).astype(dtype)
+        }
+        Z = np.zeros((nUsers, nProfiles), dtype=dtype)
+        Z[np.arange(nUsers), np.random.choice(np.arange(nProfiles), size=nUsers)] = 1.0
+        self.hiddenState = {
+            'Z': Z
+        }
+        # self.hiddenState['Z'] /= self.hiddenState['Z'].sum(axis=1).reshape(nUsers, 1)
+
+    def updatePi(self):
+        Z = self.hiddenState['Z']
+        pi = Z.sum(axis=0) + self.alpha
+        pi /= pi.sum()
+        assert self.params['pi'].shape == pi.shape
+        self.params['pi'] = pi
+
+    def estimate(self, X, y):
+        '''Updates the hiddenState based on current parameters.'''
+        U = self.params['U']
+        V = self.params['V']
+        pi = self.params['pi']
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+        scores = V[items].dot(U.T)
+        diff = scores - y.reshape((N, 1))
+        losses = diff**2
+        Z = np.zeros_like(self.hiddenState['Z'])
+        for u in range(self.nUsers):
+            idx = users == u
+            Z[u] -= 0.5 * losses[idx].sum(axis=0)
+        Z += np.log(pi)
+        self.hiddenState['Z'] = softmax(Z)
+
+
+    def loss(self, X, y=None, use_reg=True):
+        '''
+        Inputs:
+        X: Input data of shape (N, 2), [(uId, iId)].
+        y: [ratings].
+
+        Returns:
+        Loss with respect U and V given the current estimate of hiddenState.
+        '''
+        Z = self.hiddenState['Z']
+        U = self.params['U']
+        V = self.params['V']
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+
+        if y is None:
+            raise NotImplementedError("EM doesn't really fit this API.")
+
+        # scores.shape = (N, P)
+        # scores[i] is the predicted rating for all P profiles.
+        scores = V[items].dot(U.T)
+        diff = scores - y.reshape((N, 1))
+
+        # We have to average across the hiddenState probabilities.
+        losses = diff**2
+        losses *= Z[users]
+        loss = np.sum(losses) / N
+
+        dU = np.zeros_like(U)
+        dV = np.zeros_like(V)
+        weightedDiff = 2 * diff * Z[users] / N
+        dU += weightedDiff.T.dot(V[items])
+
+        for i in range(self.nItems):
+            iIdx = items == i
+            iDiff = weightedDiff[iIdx]
+            dV[i] = iDiff.dot(U).sum(axis=0)
+
+        # Regularization.
+        if use_reg:
+            loss += 0.5 * self.reg * (np.sum(U*U) + np.sum(V*V))
+            dU += self.reg * U
+            dV += self.reg * V
+        grads = {
+            'U': dU,
+            'V': dV
+        }
+        return loss, grads
+
+    def predict(self, X, mean=0.0, clipRange=(1.0, 5.0)):
+        '''Adds mean to the model prediction and clips the values to be in clipRange.'''
+        Z = self.hiddenState['Z']
+        U = self.params['U']
+        V = self.params['V']
+
+        users = X[:, 0]
+        items = X[:, 1]
+        # user2profile = np.argmax(Z, axis=1)
+        # profiles = user2profile[users]
+
+        # y = np.sum(V[items] * U[profiles], axis=1)
+        scores = V[items].dot(U.T)
+        scores *= Z[users]
+        y = scores.sum(axis=1)
+
+        y += mean
+        low, high = clipRange
+        y[y > high] = high
+        y[y < low] = low
+        return y
+
+
+
+
+def softmax(x):
+    '''x has shape (n, )'''
+    r = x.copy()
+    r -= r.max(axis=1, keepdims=True)
+    r = np.exp(r)
+    r /= r.sum(axis=1, keepdims=True)
+    return r
+
+class NonTempEMModel(Model):
+    def __init__(self, nUsers, nItems, nProfiles, alpha=1, latentDim=30, lamU=.1, lamV=.1, dtype=np.float32):
+        self.lamU = lamU
+        self.lamV = lamV
+        self.nUsers = nUsers
+        self.nItems = nItems
+        self.nProfiles = nProfiles
+        self.params = {
+            'U': np.random.normal(loc=0, scale=.001, size=(self.nProfiles, latentDim)).astype(dtype),
+            'V': np.random.normal(loc=0, scale=.001, size=(nItems, latentDim)).astype(dtype)
+        }
+        self.zs = np.random.dirichlet([1] * self.nProfiles, nUsers).astype(dtype)
+        self.pi = np.random.dirichlet([alpha] * self.nProfiles).astype(dtype)
+        self.alpha = alpha
+        self.latentDim = latentDim
+
+    def loss(self, X, y=None, use_reg=True):
+        U = self.params['U']
+        V = self.params['V']
+        pi = self.pi
+        zs = self.zs
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+        y_predict = np.sum(U[np.argmax(zs[users], axis=1)] * V[items], axis=1)
+        if y is None:
+            return y_predict
+
+        diff = y - y_predict
+        loss = np.sum(diff**2) / N
+
+        # update zs
+        self.zs = updateZs(self.nUsers, self.nProfiles, pi, users, items, y, V, U)
+        # self.zs = np.eye(self.nUsers)
+
+        # update pi
+        pi = updatePi(zs, self.alpha, self.nProfiles, N)
+        self.pi = pi
+
+        # u, v gradients
+        dU = np.zeros_like(U)
+        dV = np.zeros_like(V)
+
+        # U
+        rByP = np.dot(V[items], U.T)
+        d = rByP - np.tile(y, (self.nProfiles, 1)).T
+        e = zs[users] * d
+        dU = np.dot(e.T, V[items])
+
+        # V
+        f = np.zeros((self.nItems, self.nProfiles))
+        np.add.at(f, items, e)
+        dV = np.dot(f, U)
+
+        # regularization
+        if use_reg:
+            loss += 0.5 * (self.lamU * np.sum(U*U) + self.lamV * np.sum(V*V))
+            dU += self.lamU * U
+            dV += self.lamV * V
+
+        grads = {
+            'U': dU,
+            'V': dV
+        }
+        return loss, grads
+
+def updateZs(nUsers, nProfiles, pi, users, items, y, V, U):
+    zs = np.tile(pi, (nUsers, 1))
+
+    np.multiply.at(zs, users, normPDFs(np.tile(y, (nProfiles,1)).T, V[items].dot(U.T)))
+
+    denoms = np.sum(zs, axis=0)
+    zs = zs / np.tile(denoms, (nUsers, 1))
+    return zs
+
+def normPDFs(xs, means):
+    pi = 3.1415926
+    denom = math.sqrt(2.0 * pi)
+    num = np.exp(np.square(xs - means) / (-2.0))
+    return num / denom
+
+def updatePi(zs, alpha, nProfiles, n):
+    return (alpha - 1 + np.sum(zs, axis=0)) / (n + nProfiles * (alpha - 1))
