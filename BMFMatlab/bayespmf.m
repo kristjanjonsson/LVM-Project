@@ -22,8 +22,10 @@ if restart==1
 
   iter=0; 
 
-  num_feat = 10;
-  num_class = 10;
+  num_class = 100;
+  
+  makematrix
+  % Update makematrix to load a new data set
 
   % Initialize hierarchical priors 
   beta=2; % observation noise (precision) 
@@ -44,7 +46,7 @@ if restart==1
   mu0_m = zeros(num_feat,1);
 
   %load moviedata
-  load movieLens
+  %load movieLens
   mean_rating = mean(train_vec(:,3));
   ratings_test = double(probe_vec(:,3));
 
@@ -52,13 +54,13 @@ if restart==1
   pairs_pr = length(probe_vec);
 
   fprintf(1,'Initializing Bayesian PMF using MAP solution found by PMF \n');
-  % Update makematrix to load a new data set
-  makematrix
+  
+  
   
   
   load pmf_weight
   
-  if (size(w1_P1,1) ~= num_p)
+  if (size(w1_P1,1) ~= num_p || size(w1_P1,2) ~= num_feat)
       size(w1_P1)
       fprintf(1,'Redoing PMF...\n');
       pause;
@@ -88,8 +90,8 @@ if restart==1
   %Initialize parameters for latent assignments
   alpha = ones(num_class,1); %prior for theta
   theta = sampleDirichlet(alpha); %distribution of assignments
-  z = randi(num_class,orig_num_p,1); %latent assignments
-  z = repmat(z,num_t,1);
+  z = randi(num_class,num_p,1); %latent assignments
+  %z = repmat(z,num_t,1);
   %Select initial weights of these clusters as an average
   w1_C1_sample = zeros(num_class,num_feat);
   for cc = 1:num_class
@@ -99,7 +101,7 @@ if restart==1
   end
   
   %Generate transition matrix. Bias to staying in same state.
-  Aprior = ones(num_class,num_class) + (num_class-2)*eye(num_class);
+  Aprior = ones(num_class,num_class); %+ (num_class-2)*eye(num_class)/2;
   A = zeros(num_class);
   for cc = 1:num_class
       A(:,cc) = sampleDirichlet(Aprior(:,cc));
@@ -178,6 +180,14 @@ for epoch = epoch:maxepoch
        w1_M1_sample(mm,:) = lam*randn(num_feat,1)+mean_m;
     end
 
+    %%% Infer posterior distribution over first nodes (Azero)
+    %%% (NEW)
+    
+    nodecounts = zeros(num_class,1);
+    for uu = 1:orig_num_p
+        nodecounts(z(uu))= nodecounts(z(uu))+1;
+    end
+    Azero = sampleDirichlet(ones(num_class,1) + nodecounts);
     
     %%% Infer posterior distribution over transition matrix A
     %%% (NEW)

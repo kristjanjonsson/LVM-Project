@@ -38,7 +38,7 @@ if restart==1
   %num_p = 6040;  % Number of users 
   numbatches = 8; % Number of batches 
   
-  num_feat = 10; % Rank 10 decomposition 
+  
 
   w1_M1     = 0.1*randn(num_m, num_feat); % Movie feature vectors
   w1_P1     = 0.1*randn(num_p, num_feat); % User feature vecators

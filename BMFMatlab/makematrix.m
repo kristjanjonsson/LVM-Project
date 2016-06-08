@@ -21,7 +21,9 @@
 
 
 % Make sure to update these!
-% It might be safe to just replace these with the maximum observed.
+num_feat = 30; % Rank 30 decomposition 
+
+% If needed, hard code num_* below instead of taking the max observed.
 load ../trainTimed
 load ../testTimed
 train_vec = trainLabeled;
