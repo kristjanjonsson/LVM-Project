@@ -23,8 +23,8 @@ if restart==1
   iter=0; 
   num_m = 1682;
   num_p = 943;
-  num_feat = 10;
-  num_class = 10;
+  num_feat = 30;
+  num_class = 200;
 
   % Initialize hierarchical priors 
   beta=2; % observation noise (precision) 
