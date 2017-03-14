@@ -24,7 +24,12 @@ if restart==1
   num_m = 1682;
   num_p = 943;
   num_feat = 30;
-  num_class = 200;
+  num_class = 940;
+  
+  if num_class > num_p
+      fprintf('number of user clusters cannot be more than the number of users \n');
+      pause;
+  end
 
   % Initialize hierarchical priors 
   beta=2; % observation noise (precision) 
@@ -75,11 +80,14 @@ if restart==1
   probe_rat_all = pred(w1_M1_sample,w1_P1_sample,probe_vec,mean_rating);
   counter_prob=1;
   
-  %Initialize parameters for latent assignments
+  % Initialize parameters for latent assignments
   alpha = ones(num_class,1); %prior for theta
   theta = sampleDirichlet(alpha); %distribution of assignments
-  z = randi(num_class,num_p,1); %latent assignments
-  %Select initial weights of these clusters as an average
+  z = randi(num_class,num_p,1); % random initial latent assignments
+  all_c_z = randperm(num_p); % ensure each cluster assigned at least once
+  z(all_c_z(1:num_class)) = 1:num_class;
+  
+  % Select initial weights of these clusters as an average
   w1_C1_sample = zeros(num_class,num_feat);
   for cc = 1:num_class
       ff = find(z == cc);
@@ -206,6 +214,7 @@ for epoch = epoch:maxepoch
             z(uu) = sampleFromDiscrete(probs);
         else
             z(uu) = randi(num_class,1,1);
+            fprintf('sum of prbability is zero');
             pause; %Shouldn't happen.
         end
     end
