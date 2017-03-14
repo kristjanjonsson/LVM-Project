@@ -1,5 +1,5 @@
 import numpy as np
-
+import math
 
 class Model:
     '''An abstract model class.
@@ -279,7 +279,7 @@ class MixtureModel(Model):
         self.alpha = alpha.astype(dtype) - 1 if alpha is not None else np.zeros(nProfiles, dtype=dtype)
         self.dtype = dtype
         self.params = {
-            'pi': np.ones(nProfiles, dtype=dtype) / nUsers,
+            'pi': np.ones(nProfiles, dtype=dtype) / nProfiles,
             'U': np.random.normal(scale=1e-3, size=(nProfiles, latentDim)).astype(dtype),
             'V': np.random.normal(scale=1e-3, size=(nItems, latentDim)).astype(dtype)
         }
@@ -294,11 +294,11 @@ class MixtureModel(Model):
         Z = self.hiddenState['Z']
         pi = Z.sum(axis=0) + self.alpha
         pi /= pi.sum()
+        assert self.params['pi'].shape == pi.shape
         self.params['pi'] = pi
 
     def estimate(self, X, y):
         '''Updates the hiddenState based on current parameters.'''
-        Z = self.hiddenState['Z']
         U = self.params['U']
         V = self.params['V']
         pi = self.params['pi']
@@ -310,8 +310,12 @@ class MixtureModel(Model):
         scores = V[items].dot(U.T)
         diff = scores - y.reshape((N, 1))
         losses = diff**2
-        logp = np.log(pi) - 0.5 * losses.sum(axis=0)
-        self.params['Z'] = softmax(logp)
+        Z = np.zeros_like(self.hiddenState['Z'])
+        for u in range(self.nUsers):
+            idx = users == u
+            Z[u] -= 0.5 * losses[idx].sum(axis=0)
+        Z += np.log(pi)
+        self.hiddenState['Z'] = softmax(Z)
 
 
     def loss(self, X, y=None, use_reg=True):
@@ -394,8 +398,93 @@ class MixtureModel(Model):
 def softmax(x):
     '''x has shape (n, )'''
     r = x.copy()
-    r -= r.max()
+    r -= r.max(axis=1, keepdims=True)
     r = np.exp(r)
-    r /= r.sum()
+    r /= r.sum(axis=1, keepdims=True)
     return r
 
+class NonTempEMModel(Model):
+    def __init__(self, nUsers, nItems, nProfiles, alpha=1, latentDim=30, lamU=.1, lamV=.1, dtype=np.float32):
+        self.lamU = lamU
+        self.lamV = lamV
+        self.nUsers = nUsers
+        self.nItems = nItems
+        self.nProfiles = nProfiles
+        self.params = {
+            'U': np.random.normal(loc=0, scale=.001, size=(self.nProfiles, latentDim)).astype(dtype),
+            'V': np.random.normal(loc=0, scale=.001, size=(nItems, latentDim)).astype(dtype)
+        }
+        self.zs = np.random.dirichlet([1] * self.nProfiles, nUsers).astype(dtype)
+        self.pi = np.random.dirichlet([alpha] * self.nProfiles).astype(dtype)
+        self.alpha = alpha
+        self.latentDim = latentDim
+
+    def loss(self, X, y=None, use_reg=True):
+        U = self.params['U']
+        V = self.params['V']
+        pi = self.pi
+        zs = self.zs
+
+        N = len(X)
+        users = X[:, 0]
+        items = X[:, 1]
+
+        y_predict = np.sum(U[np.argmax(zs[users], axis=1)] * V[items], axis=1)
+        if y is None:
+            return y_predict
+
+        diff = y - y_predict
+        loss = np.sum(diff**2) / N
+
+        # update zs
+        self.zs = updateZs(self.nUsers, self.nProfiles, pi, users, items, y, V, U)
+        # self.zs = np.eye(self.nUsers)
+
+        # update pi
+        pi = updatePi(zs, self.alpha, self.nProfiles, N)
+        self.pi = pi
+
+        # u, v gradients
+        dU = np.zeros_like(U)
+        dV = np.zeros_like(V)
+
+        # U
+        rByP = np.dot(V[items], U.T)
+        d = rByP - np.tile(y, (self.nProfiles, 1)).T
+        e = zs[users] * d
+        dU = np.dot(e.T, V[items])
+
+        # V
+        f = np.zeros((self.nItems, self.nProfiles))
+        np.add.at(f, items, e)
+        dV = np.dot(f, U)
+
+        # regularization
+        if use_reg:
+            loss += 0.5 * (self.lamU * np.sum(U*U) + self.lamV * np.sum(V*V))
+            dU += self.lamU * U
+            dV += self.lamV * V
+
+        grads = {
+            'U': dU,
+            'V': dV
+        }
+        return loss, grads
+
+def updateZs(nUsers, nProfiles, pi, users, items, y, V, U):
+    zs = np.tile(pi, (nUsers, 1))
+
+    np.multiply.at(zs, users, normPDFs(np.tile(y, (nProfiles,1)).T, V[items].dot(U.T)))
+
+    denoms = np.sum(zs, axis=0)
+    zs = zs / np.tile(denoms, (nUsers, 1))
+    return zs
+
+def normPDFs(xs, means):
+    pi = 3.1415926
+    denom = math.sqrt(2.0 * pi)
+    num = np.exp(np.square(xs - means) / (-2.0))
+    return num / denom
+
+def updatePi(zs, alpha, nProfiles, n):
+    return (alpha - 1 + np.sum(zs, axis=0)) / (n + nProfiles * (alpha - 1))
